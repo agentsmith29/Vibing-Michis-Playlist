@@ -1,0 +1,16 @@
+services:
+    michi-playlist:
+      image: michi-playlist:1.0
+      build: .
+      container_name: michi-playlist
+      environment:
+          - PUID=1000
+          - PGID=1000
+      volumes:
+          - ./html:/var/www/html
+          - ./mp3_library:/app/mp3_library
+      ports:
+          - 4000:80
+      restart: unless-stopped
+      # user: "1000:1000"
+

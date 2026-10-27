@@ -1,0 +1,41 @@
+body {
+	background-color: lightblue;
+}
+
+h1 {
+	color: navy;
+}
+
+h2 {
+	color: navy;
+}
+
+
+img {
+	max-width: 100%;
+}
+
+
+
+a:link {
+	color: navy;
+}
+
+a:hover {
+	color: green;
+}
+
+a:active {
+	color: white;
+}
+
+a:visited {
+	color: navy;
+}
+
+
+div.timetemp {
+	color: black;
+	font-size: 15pt;
+}
+
