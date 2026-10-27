@@ -1,16 +1,121 @@
-services:
-    michi-playlist:
-      image: michi-playlist:1.0
-      build: .
-      container_name: michi-playlist
-      environment:
-          - PUID=1000
-          - PGID=1000
-      volumes:
-          - ./html:/var/www/html
-          - ./mp3_library:/app/mp3_library
-      ports:
-          - 4000:80
-      restart: unless-stopped
-      # user: "1000:1000"
+# Michi-Playlist: private web music player.
+#
+#   cp .env.example .env   # set passwords
+#   docker compose up -d --build
+#
+# Only the reverse proxy publishes a port, and by default only on 127.0.0.1,
+# so the player is not reachable from other machines. The database lives on an
+# internal network without internet access.
 
+name: michi-playlist
+
+x-app: &app
+  build:
+    context: .
+    target: app
+    args:
+      APP_UID: ${APP_UID:-1000}
+      APP_GID: ${APP_GID:-1000}
+  image: michi-playlist-app:2
+  restart: unless-stopped
+  environment:
+    POSTGRES_HOST: db
+    POSTGRES_DB: michi
+    POSTGRES_USER: michi
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    APP_USERNAME: ${APP_USERNAME:-admin}
+    APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD in .env}
+    DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-}
+    DJANGO_ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1},localhost
+    DJANGO_CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-}
+    SECURE_COOKIES: ${SECURE_COOKIES:-false}
+    TRUST_PROXY_HEADERS: ${SECURE_COOKIES:-false}
+    USE_X_ACCEL_REDIRECT: "true"
+    LIBRARY_SCAN_INTERVAL: ${LIBRARY_SCAN_INTERVAL:-300}
+    TZ: ${TZ:-Europe/Berlin}
+  volumes:
+    - ${MUSIC_DIR:-./music}:/music
+    - appdata:/data
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  proxy:
+    build:
+      context: .
+      target: proxy
+    image: michi-playlist-proxy:2
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-4000}:8080"
+    volumes:
+      - ${MUSIC_DIR:-./music}:/music:ro
+      - type: volume
+        source: appdata
+        target: /media
+        read_only: true
+        volume:
+          subpath: media
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [edge]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  api:
+    <<: *app
+    command: ["web"]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [edge, internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  worker:
+    <<: *app
+    command: ["worker"]
+    depends_on:
+      api:
+        condition: service_healthy
+    # Needs internet access (edge network) for YouTube downloads and metadata lookup.
+    networks: [edge, internal]
+
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: michi
+      POSTGRES_USER: michi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U michi -d michi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  # Reverse proxy <-> API; also gives API/worker outbound internet access.
+  edge: {}
+  # Database network: no internet, not reachable from the proxy.
+  internal:
+    internal: true
+
+volumes:
+  pgdata:
+  appdata:

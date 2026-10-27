@@ -1,0 +1,9 @@
+{
+  "name": "Michi Playlist",
+  "short_name": "Michi",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#121212",
+  "theme_color": "#121212",
+  "icons": [{ "src": "/mango_icon.png", "sizes": "512x512", "type": "image/png" }]
+}

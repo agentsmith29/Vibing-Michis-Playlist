@@ -1,4 +1,0 @@
-numpy
-yt-dlp
-eyed3
-requests

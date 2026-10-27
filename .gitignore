@@ -1,5 +1,16 @@
+# Music library and runtime data
 *.mp3
-playlists/*
-__pycache__
-cache_image
-cache_mp3
+music/*
+!music/.gitkeep
+.env
+
+# Python
+__pycache__/
+*.pyc
+backend/.venv/
+backend/var/
+backend/staticfiles/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/

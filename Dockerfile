@@ -1,97 +1,54 @@
-# Verwende ein offizielles Debian-Basis-Image, da es schlanker ist
-# als ein vollständiges Ubuntu-Image und die benötigten Pakete enthält.
-# FROM debian:bullseye-slim
-FROM debian:bookworm-slim
+# syntax=docker/dockerfile:1
 
-# Setze Umgebungsvariablen, um nicht-interaktive Installationen zu gewährleisten
-ENV DEBIAN_FRONTEND=noninteractive
+# --- Frontend build -------------------------------------------------------------
+FROM node:24-alpine AS frontend-build
+WORKDIR /src
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
 
+# --- Reverse proxy + static frontend ----------------------------------------------
+FROM nginxinc/nginx-unprivileged:1.29-alpine AS proxy
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=frontend-build /src/dist /usr/share/nginx/html
 
+# --- Django API + background worker ------------------------------------------------
+FROM python:3.13-slim-trixie AS app
 
-# Aktualisiere die Paketliste und installiere alle benötigten Pakete in einem einzigen RUN-Befehl.
-# Dadurch wird die Anzahl der Ebenen im Docker-Image reduziert, was die Image-Größe verringert.
-#
-# - nginx: Webserver
-# - python3: Python-Interpreter
-# - python3-pip: Paketmanager für Python
-# - python3-numpy: Python-Bibliothek für numerische Berechnungen
-# - ffmpeg: Multimedia-Framework
-# - libav-tools: Enthält ffprobe (manchmal in separatem Paket)
-# - ca-certificates: Wichtig für sichere Verbindungen
-# - curl: Ein nützliches Tool für Netzwerkoperationen
-# - --no-install-recommends: Verringert die Größe des Images, indem nur
-#   notwendige Abhängigkeiten installiert werden.
-RUN apt-get update && \
-    apt-get install -y \
-    nginx \
-    php-fpm \
-    php-mysql \
-    php-cli \
-    php-gd \
-    php-curl \
-    php-mbstring \
-    php-zip \
-    python3 \
-    python3-pip \
-    ffmpeg \
-    # libav-tools \
-    ca-certificates \
-    curl \
-    vim && \
-    # rm -rf /var/lib/apt/lists/*
-    # --- Wichtiger Schritt zur Reduzierung der Image-Größe ---
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+ARG APP_UID=1000
+ARG APP_GID=1000
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DATA_DIR=/data \
+    MUSIC_ROOT=/music \
+    XDG_CACHE_HOME=/data/cache \
+    DENO_DIR=/data/cache/deno
 
+# ffmpeg converts downloads to mp3; deno is the JavaScript runtime yt-dlp needs for YouTube.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=denoland/deno:bin-2.5.6 /deno /usr/local/bin/deno
 
-# Den PHP-FPM Socket-Pfad in der PHP-FPM Konfiguration anpassen
-# Standardmäßig lauscht PHP-FPM auf 127.0.0.1:9000, wir ändern das auf einen Unix-Socket
-# RUN sed -i -e "s/listen = 127.0.0.1:9000/listen = \/run\/php\/php8.2-fpm.sock/" /etc/php/*/fpm/pool.d/www.conf
+RUN groupadd --gid "${APP_GID}" app \
+    && useradd --uid "${APP_UID}" --gid app --home-dir /app --shell /usr/sbin/nologin app \
+    && mkdir -p /data /music \
+    && chown app:app /data /music
 
-
-RUN PHP_VERSION=$(ls /etc/php | grep -E '^[0-9]+\.[0-9]+$' | tail -n 1) && \
-  sed -i -e "s/listen = 127.0.0.1:9000/listen = \/run\/php\/php${PHP_VERSION}-fpm.sock/" /etc/php/*/fpm/pool.d/www.conf && \
-  mkdir -p /run/php
-
-# Setze das Arbeitsverzeichnis im Container
 WORKDIR /app
-COPY config_files/entrypoint.sh .
-RUN chmod +x entrypoint.sh
+COPY backend/requirements.txt .
+RUN pip install -r requirements.txt
 
-# Kopiere die Abhängigkeitsdatei in den Container
-# COPY mp3_library .
-COPY mp3_library/requirements.txt .
-RUN pip3 install -r requirements.txt --break-system-packages
+COPY backend/ .
+RUN DJANGO_SECRET_KEY=build-only DATA_DIR=/tmp/build python manage.py collectstatic --noinput \
+    && rm -rf /tmp/build
+COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-
-# Passe die Nginx-Konfiguration an, um auf Port 4000 zu lauschen.
-# Dies ist eine einfache Konfiguration, die den Standard-Port 80 auf 4000 ändert.
-COPY config_files/nginx.conf /etc/nginx/sites-enabled/default
-# COPY ./html /var/www/html
-# RUN PHP_VERSION=$(ls /etc/php | grep -E '^[0-9]+\.[0-9]+$' | tail -n 1) && \
-#    sed -i -e "s/fastcgi_pass unix:\/run\/php\/phpX.X-fpm.sock;/fastcgi_pass unix:\/run\/php\/php${PHP_VERSION}-fpm.sock;/" /etc/nginx/sites-available/default
-
-RUN PHP_VERSION=$(ls /etc/php | grep -E '^[0-9]+\.[0-9]+$' | tail -n 1) && \
-   sed -i -e "s/fastcgi_pass unix:\/run\/php\/phpX.X-fpm.sock;/fastcgi_pass unix:\/run\/php\/php${PHP_VERSION}-fpm.sock;/" /etc/nginx/sites-enabled/default
-
-# Cache-Ordner erstellen und Rechte an www-data übertragen
-RUN mkdir -p /var/www/.cache && \
-    chown -R www-data:www-data /var/www /usr/local/lib/python* /usr/local/bin
-
-# expose the port for nginx
-EXPOSE 80
-
-
-# Erstelle ein Verzeichnis für Nginx und gib dem "nginx"-Benutzer die nötigen Rechte.
-# Dadurch wird verhindert, dass der Nginx-Prozess mit root-Rechten läuft, was eine
-# gute Sicherheitspraxis ist.
-# RUN mkdir -p /var/www/html && \
-#     chown -R nginx:nginx /var/www/html
-
-# Starte den Nginx-Webserver im Vordergrund, damit der Container aktiv bleibt.
-# Die Python-Installation ist in diesem Fall nur eine Voraussetzung, die im Image
-# enthalten ist, aber nicht direkt gestartet wird.
-CMD ["/app/entrypoint.sh"]
-# ENTRYPOINT ["/app/entrypoint.sh"]
-# CMD ["nginx", "-g", "daemon off;"]
+USER app
+EXPOSE 8000
+ENTRYPOINT ["entrypoint.sh"]
+CMD ["web"]
