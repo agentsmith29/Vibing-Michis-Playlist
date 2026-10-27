@@ -84,6 +84,11 @@ class Track(models.Model):
     def __str__(self) -> str:
         return f"{self.artist} – {self.title}"
 
+    @property
+    def file_version(self) -> str:
+        """Changes whenever the file changes (new tags, cover or audio); lets apps detect outdated downloads."""
+        return f"{self.file_size}-{int(self.file_mtime * 1000)}"
+
 
 class Playlist(models.Model):
     name = models.CharField(max_length=200)

@@ -13,6 +13,7 @@ urlpatterns = router.urls + [
     path("home/", views.HomeView.as_view()),
     path("search/", views.SearchView.as_view()),
     path("history/", views.HistoryView.as_view()),
+    path("sync/tracks/", views.SyncTracksView.as_view()),
     re_path(r"^artwork/(?P<sha1>[0-9a-f]{40})/$", views.ArtworkView.as_view(), name="artwork"),
     path("metadata/search/", views.MetadataSearchView.as_view()),
     path("library/stats/", views.LibraryStatsView.as_view()),

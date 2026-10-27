@@ -125,6 +125,45 @@ The player is meant to stay private:
   and cover image URLs are restricted to known hosts.
 - A strict Content Security Policy and other security headers are set.
 
+## Mobile app (Android / iPhone)
+
+`mobile/` contains a native app (Expo / React Native) with streaming,
+background playback with lock-screen controls, and **offline downloads**:
+
+- Download songs, albums or whole playlists; downloaded playlists follow
+  changes on the server (new songs are downloaded, removed ones deleted).
+- Every song shows where it comes from: grey cloud = streamed, orange arrow =
+  on the phone. Songs changed on the server (new tags, cover or audio) are
+  marked and can be updated ("Update all" on the Downloads tab, or
+  "Re-download" on a song).
+- Without connection the app switches to an offline mode with the downloaded
+  music; plays are uploaded when the server is reachable again.
+
+**Connecting through WireGuard.** The phone reaches the server through your
+VPN, so the player never has to be exposed to the internet:
+
+1. In `.env`, set `BIND_ADDRESS` to the server's WireGuard IP (e.g. `10.8.0.1`)
+   and add it to `ALLOWED_HOSTS`; then `docker compose up -d`.
+2. In the app, log in with `10.8.0.1:4000` and your user. WireGuard encrypts
+   the traffic, so plain HTTP inside the tunnel is fine.
+
+Each phone gets its own login token; see and revoke them in the web player
+under *Settings → Connected apps*. Audio is streamed through short-lived
+signed links (per song, 24 h), so the token never appears in URLs or logs.
+
+**Build & install.** Real installs are built with EAS (no Android Studio or
+Xcode needed):
+
+```bash
+cd mobile
+npm install
+npx eas-cli@latest build -p android --profile preview   # installable APK
+npx eas-cli@latest build -p ios --profile preview       # needs an Apple developer account
+```
+
+For development, `npx expo start` and the Expo Go app work too (without
+lock-screen controls, which need a real build).
+
 ## Configuration
 
 All settings live in `.env` (see [.env.example](.env.example)):

@@ -1,6 +1,7 @@
 import logging
 import uuid
 from datetime import timedelta
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.db import transaction
@@ -8,10 +9,12 @@ from django.db.models import Count, Max, OuterRef, Q, Subquery, Sum
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import MultiPartParser
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -37,6 +40,8 @@ from library.services.files import protected_file
 from library.services.importers import ImportFailed, append_to_playlist, save_uploaded_file
 from library.services.metadata import MetadataError, search_itunes
 from library.services.paths import safe_filename
+from library.services.signing import MAX_AGE as STREAM_URL_MAX_AGE
+from library.services.signing import sign_stream, verify_stream
 from library.services.tagging import InvalidAudioFile
 from library.tasks import finalize_youtube_job
 
@@ -126,10 +131,28 @@ class TrackViewSet(
     def perform_destroy(self, instance):
         delete_track(instance)
 
-    @action(detail=True)
+    @action(detail=True, permission_classes=[AllowAny])
     def stream(self, request, pk=None):
+        """Audio file; needs a login (session/token) or a signed link from ``stream_urls``."""
         track = get_object_or_404(Track, pk=pk)
+        authorized = request.user is not None and request.user.is_authenticated
+        if not authorized and request.query_params.get("sig"):
+            authorized = verify_stream(request.query_params["sig"], track.pk) is not None
+        if not authorized:
+            raise PermissionDenied("Authentication credentials were not provided.")
         return protected_file(request, "music", track.file_path, content_type="audio/mpeg")
+
+    @action(detail=False, methods=["post"], url_path="stream-urls")
+    def stream_urls(self, request):
+        """Signed stream links for the native app, e.g. ``{"ids": [1, 2]}``."""
+        ids = request.data.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids) or len(ids) > 2000:
+            raise ValidationError({"ids": "Expected a list of track ids"})
+        existing = Track.objects.filter(pk__in=ids).values_list("pk", flat=True)
+        urls = {
+            str(pk): f"/api/tracks/{pk}/stream/?{urlencode({'sig': sign_stream(pk, request.user.pk)})}" for pk in existing
+        }
+        return Response({"urls": urls, "expires_in": STREAM_URL_MAX_AGE})
 
 
 class AlbumViewSet(viewsets.ReadOnlyModelViewSet):
@@ -235,6 +258,10 @@ class HistoryView(APIView):
         )
 
     def post(self, request):
+        """Record one play, or a batch ``{"events": [...]}`` collected by the app while offline."""
+        if isinstance(request.data.get("events"), list):
+            self._record_batch(request.user, request.data["events"][:1000])
+            return Response(status=status.HTTP_204_NO_CONTENT)
         track = get_object_or_404(Track, pk=request.data.get("track_id"))
         playlist_id = request.data.get("playlist_id")
         playlist = Playlist.objects.filter(pk=playlist_id).first() if playlist_id else None
@@ -243,6 +270,46 @@ class HistoryView(APIView):
         if not (last and last.track_id == track.pk and timezone.now() - last.played_at < timedelta(seconds=30)):
             PlayEvent.objects.create(user=request.user, track=track, playlist=playlist)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @staticmethod
+    def _record_batch(user, events: list) -> None:
+        track_ids = {e.get("track_id") for e in events if isinstance(e, dict)}
+        playlist_ids = {e.get("playlist_id") for e in events if isinstance(e, dict) and e.get("playlist_id")}
+        tracks = set(Track.objects.filter(pk__in=[i for i in track_ids if isinstance(i, int)]).values_list("pk", flat=True))
+        playlists = set(
+            Playlist.objects.filter(pk__in=[i for i in playlist_ids if isinstance(i, int)]).values_list("pk", flat=True)
+        )
+        now = timezone.now()
+        rows = []
+        for event in events:
+            if not isinstance(event, dict) or event.get("track_id") not in tracks:
+                continue
+            played_at = parse_datetime(str(event.get("played_at") or "")) or now
+            if timezone.is_naive(played_at):
+                played_at = timezone.make_aware(played_at)
+            rows.append(
+                PlayEvent(
+                    user=user,
+                    track_id=event["track_id"],
+                    playlist_id=event.get("playlist_id") if event.get("playlist_id") in playlists else None,
+                    played_at=min(played_at, now),
+                )
+            )
+        PlayEvent.objects.bulk_create(rows)
+
+
+class SyncTracksView(APIView):
+    """Current metadata for tracks the app has downloaded; ids that no longer exist are reported as missing."""
+
+    def post(self, request):
+        ids = request.data.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids) or len(ids) > 20_000:
+            raise ValidationError({"ids": "Expected a list of track ids"})
+        tracks = list(tracks_qs().filter(pk__in=ids))
+        found = {t.pk for t in tracks}
+        return Response(
+            {"tracks": TrackSerializer(tracks, many=True).data, "missing": [i for i in ids if i not in found]}
+        )
 
 
 class HomeView(APIView):

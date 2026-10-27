@@ -7,6 +7,7 @@ from library.services.metadata import is_allowed_artwork_url
 
 class TrackSerializer(serializers.ModelSerializer):
     artist = serializers.CharField(source="artist.name", read_only=True)
+    file_version = serializers.CharField(read_only=True)
     album = serializers.CharField(source="album.title", read_only=True, default=None)
     artwork = serializers.CharField(source="artwork.sha1", read_only=True, default=None)
 
@@ -14,7 +15,7 @@ class TrackSerializer(serializers.ModelSerializer):
         model = Track
         fields = [
             "id", "title", "artist", "artist_id", "album", "album_id", "genre", "year", "track_number",
-            "disc_number", "duration", "bitrate", "artwork", "file_path", "added_at",
+            "disc_number", "duration", "bitrate", "artwork", "file_path", "file_version", "added_at",
         ]
         read_only_fields = fields
 

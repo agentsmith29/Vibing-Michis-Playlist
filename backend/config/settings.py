@@ -168,7 +168,11 @@ X_FRAME_OPTIONS = "DENY"
 # --- REST framework --------------------------------------------------------
 
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
+    # Session first: unauthenticated browser requests keep getting a plain 403.
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+        "core.authentication.DeviceTokenAuthentication",
+    ],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "DEFAULT_PAGINATION_CLASS": "library.pagination.DefaultPagination",

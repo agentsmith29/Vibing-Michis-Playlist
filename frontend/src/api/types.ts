@@ -24,6 +24,8 @@ export interface Track {
   bitrate: number | null;
   artwork: string | null;
   file_path: string;
+  /** Changes when the file changes on the server (re-tagged, new cover, replaced audio). */
+  file_version: string;
   added_at: string;
 }
 

@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Alert, Badge, Button, Col, Form, Row, Spinner, ToggleButton, ToggleButtonGroup } from "react-bootstrap";
 
@@ -126,6 +126,52 @@ function DownloaderCard() {
   );
 }
 
+interface Device {
+  id: number;
+  name: string;
+  hint: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+function DevicesCard() {
+  const client = useQueryClient();
+  const devices = useQuery({ queryKey: ["devices"], queryFn: () => api<Device[]>("/auth/devices/") });
+  const revoke = async (device: Device) => {
+    try {
+      await api(`/auth/devices/${device.id}/`, { method: "DELETE" });
+      toast(`${device.name} signed out`);
+      client.invalidateQueries({ queryKey: ["devices"] });
+    } catch (error) {
+      toast(errorMessage(error), "danger");
+    }
+  };
+
+  return (
+    <section className="panel mb-3">
+      <h2 className="h5 fw-bold">Connected apps</h2>
+      <p className="small text-body-secondary">Phones signed in with the Michi Playlist app. Removing one signs it out immediately.</p>
+      {devices.data?.length === 0 && <p className="small text-body-tertiary mb-0">No apps connected yet.</p>}
+      {devices.data?.map((device) => (
+        <div key={device.id} className="job-row">
+          <div className="job-icon">
+            <i className="bi bi-phone" />
+          </div>
+          <div className="min-w-0 flex-grow-1">
+            <div className="fw-semibold text-truncate">{device.name}</div>
+            <div className="small text-body-secondary">
+              Last used {device.last_used_at ? new Date(device.last_used_at).toLocaleString() : "never"}
+            </div>
+          </div>
+          <Button size="sm" variant="outline-danger" onClick={() => revoke(device)}>
+            Remove
+          </Button>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 function AppearanceCard() {
   const [theme, setTheme] = useState<ThemePreference>(getThemePreference());
   return (
@@ -214,6 +260,7 @@ export default function SettingsPage() {
         <Col xl={5}>
           <AppearanceCard />
           <AccountCard />
+          <DevicesCard />
           <p className="small text-body-tertiary px-1">
             Michi Playlist {system.data?.version} · Django {system.data?.django}
           </p>
