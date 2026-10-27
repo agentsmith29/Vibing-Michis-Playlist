@@ -1,0 +1,192 @@
+# Builds the mobile app and publishes it as a GitHub Release.
+#
+#   git tag app-v1.2.0 && git push origin app-v1.2.0   -> release "app-v1.2.0" with APK + IPA
+#   Actions tab -> "Mobile app release" -> Run workflow   -> build only (files under the run's artifacts)
+#
+# Android: release APK signed with the key from the repository secrets
+#   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS
+#   (without them the APK is signed with the template's debug key).
+# iOS: unsigned IPA (no Apple developer account needed); install it with
+#   Sideloadly or AltStore, which sign it with your own Apple ID.
+
+name: Mobile app release
+
+on:
+  push:
+    tags: ["app-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "24"
+  # Version comes from the tag (app-v1.2.0 -> 1.2.0); manual runs use app.json's version.
+  APP_VERSION: ${{ startsWith(github.ref, 'refs/tags/app-v') && github.ref_name || '' }}
+  APP_BUILD_NUMBER: ${{ github.run_number }}
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set version
+        run: echo "APP_VERSION=${APP_VERSION#app-v}" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Generate native project
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Set up signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret - the APK is signed with the debug key."
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          {
+            echo "ORG_GRADLE_PROJECT_MICHI_UPLOAD_STORE_FILE=$RUNNER_TEMP/release.jks"
+            echo "ORG_GRADLE_PROJECT_MICHI_UPLOAD_STORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "ORG_GRADLE_PROJECT_MICHI_UPLOAD_KEY_ALIAS=$KEY_ALIAS"
+            echo "ORG_GRADLE_PROJECT_MICHI_UPLOAD_KEY_PASSWORD=$KEYSTORE_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        working-directory: mobile/android
+        # arm64 for phones, x86_64 for emulators; skipping the 32-bit ABIs halves the build time.
+        run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,x86_64
+
+      - name: Collect APK
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk "dist/MichiPlaylist-${APP_VERSION:-dev}.apk"
+          ls -la dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-apk
+          path: mobile/dist/*.apk
+          if-no-files-found: error
+
+  ios:
+    name: iOS IPA (unsigned)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Set version
+        run: echo "APP_VERSION=${APP_VERSION#app-v}" >> "$GITHUB_ENV"
+
+      - name: Select newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate native project
+        run: npx expo prebuild --platform ios --clean
+
+      - name: Build archive (without code signing)
+        run: |
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          set -o pipefail
+          xcodebuild archive \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            | tail -n 200
+
+      - name: Package IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/ipa/Payload" dist
+          cp -R "$RUNNER_TEMP"/App.xcarchive/Products/Applications/*.app "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/mobile/dist/MichiPlaylist-${APP_VERSION:-dev}-unsigned.ipa" Payload)
+          ls -la dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ios-ipa
+          path: mobile/dist/*.ipa
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/app-v')
+    needs: [android, ios]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > notes.md <<'EOF'
+          ## Michi Playlist app
+
+          **Android:** download the `.apk` on your phone and open it (allow installing from this source once).
+
+          **iPhone:** the `.ipa` is unsigned. Install it with [Sideloadly](https://sideloadly.io) or
+          [AltStore](https://altstore.io), which sign it with your Apple ID. With a free Apple ID the
+          app has to be refreshed every 7 days.
+
+          Log in with your server's WireGuard address, e.g. `10.8.0.1:4000`.
+          EOF
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Michi Playlist app ${TAG#app-v}" \
+            --notes-file notes.md

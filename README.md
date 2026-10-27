@@ -1,6 +1,7 @@
 ![Michi-Playlist Logo](./media/Michi_Playlist_Logo.svg)
 
 # Michi-Playlist
+A vibe coded playlist player i did in under 2h for a colleage that wanted a simple music player for his mp3 collection. It was a fun project and i learned ~a lot~ nothing.
 
 A private, self-hosted web music player for your own mp3 collection, styled
 like Spotify or Apple Music. Version 2 is a complete rewrite: a Django REST
@@ -151,8 +152,28 @@ Each phone gets its own login token; see and revoke them in the web player
 under *Settings → Connected apps*. Audio is streamed through short-lived
 signed links (per song, 24 h), so the token never appears in URLs or logs.
 
-**Build & install.** Real installs are built with EAS (no Android Studio or
-Xcode needed):
+**Releases (GitHub Actions).** Pushing a tag like `app-v1.2.0` builds the app on
+GitHub and publishes a release with both files
+([workflow](.github/workflows/mobile-release.yml)):
+
+- `MichiPlaylist-1.2.0.apk` – install directly on Android.
+- `MichiPlaylist-1.2.0-unsigned.ipa` – install on iPhone with
+  [Sideloadly](https://sideloadly.io) or [AltStore](https://altstore.io), which
+  sign it with your Apple ID (free Apple IDs: refresh every 7 days).
+
+```bash
+git tag app-v1.2.0 && git push origin app-v1.2.0
+```
+
+The APK is signed with your own key from the repository secrets
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS`
+(create one with `keytool -genkeypair -storetype PKCS12 -keystore release.jks
+-alias michi -keyalg RSA -keysize 4096 -validity 10000` and store
+`base64 -w0 release.jks` as the first secret). Keep a backup of the key: updates
+must be signed with the same key.
+
+**Build with EAS.** Alternatively, Expo's cloud builds work too (no Android
+Studio or Xcode needed):
 
 ```bash
 cd mobile
