@@ -1,0 +1,5 @@
+*.mp3
+playlists/*
+__pycache__
+cache_image
+cache_mp3
