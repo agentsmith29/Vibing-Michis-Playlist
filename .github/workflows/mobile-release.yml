@@ -7,7 +7,8 @@
 #   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS
 #   (without them the APK is signed with the template's debug key).
 # iOS: unsigned IPA (no Apple developer account needed); install it with
-#   Sideloadly or AltStore, which sign it with your own Apple ID.
+#   AltStore (Classic), which signs it with your own Apple ID. The release also publishes
+#   it as an AltStore source on GitHub Pages (needs the PAGES_DEPLOY_KEY secret).
 
 name: Mobile app release
 
@@ -180,9 +181,10 @@ jobs:
 
           **Android:** download the `.apk` on your phone and open it (allow installing from this source once).
 
-          **iPhone:** the `.ipa` is unsigned. Install it with [Sideloadly](https://sideloadly.io) or
-          [AltStore](https://altstore.io), which sign it with your Apple ID. With a free Apple ID the
-          app has to be refreshed every 7 days.
+          **iPhone:** use [AltStore Classic](https://altstore.io) and add the source
+          `https://agentsmith29.github.io/michi-playlist/altstore.json` (Browse → Sources → +).
+          AltStore signs the app with your Apple ID and refreshes it automatically; new
+          versions show up as updates. The `.ipa` here is the same unsigned build.
 
           Log in with your server's WireGuard address, e.g. `10.8.0.1:4000`.
           EOF
@@ -190,3 +192,51 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "Michi Playlist app ${TAG#app-v}" \
             --notes-file notes.md
+
+  altstore:
+    name: Update AltStore source
+    # Publishes the IPA + source JSON to the public GitHub Pages site, because AltStore
+    # cannot download release files of this private repository.
+    if: startsWith(github.ref, 'refs/tags/app-v')
+    needs: [release]
+    runs-on: ubuntu-24.04
+    env:
+      PAGES_REPO: agentsmith29/agentsmith29.github.io
+      PAGES_BRANCH: gdd_branch
+      PAGES_URL: https://agentsmith29.github.io/michi-playlist
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            mobile/scripts
+            mobile/assets/icon.png
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ env.PAGES_REPO }}
+          ref: ${{ env.PAGES_BRANCH }}
+          # Deploy key with write access to the Pages repository only.
+          ssh-key: ${{ secrets.PAGES_DEPLOY_KEY }}
+          path: pages
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ios-ipa
+          path: ipa
+
+      - name: Update source
+        run: |
+          mkdir -p pages/michi-playlist
+          cp ipa/*.ipa pages/michi-playlist/MichiPlaylist.ipa
+          cp mobile/assets/icon.png pages/michi-playlist/icon.png
+          python3 mobile/scripts/altstore_source.py pages/michi-playlist/MichiPlaylist.ipa "$PAGES_URL" pages/michi-playlist/altstore.json
+
+      - name: Publish
+        working-directory: pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add michi-playlist
+          git commit -m "Michi Playlist ${GITHUB_REF_NAME#app-v} for AltStore"
+          git push origin "HEAD:$PAGES_BRANCH"

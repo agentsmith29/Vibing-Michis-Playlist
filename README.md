@@ -157,9 +157,20 @@ GitHub and publishes a release with both files
 ([workflow](.github/workflows/mobile-release.yml)):
 
 - `MichiPlaylist-1.2.0.apk` – install directly on Android.
-- `MichiPlaylist-1.2.0-unsigned.ipa` – install on iPhone with
-  [Sideloadly](https://sideloadly.io) or [AltStore](https://altstore.io), which
-  sign it with your Apple ID (free Apple IDs: refresh every 7 days).
+- `MichiPlaylist-1.2.0-unsigned.ipa` – for iPhone, also published as an
+  **AltStore source** (see below).
+
+**iPhone via AltStore.** Install [AltStore Classic](https://altstore.io) with
+AltServer on your PC, then add the source
+`https://agentsmith29.github.io/michi-playlist/altstore.json`
+(Browse → Sources → +) and install *Michi Playlist*. AltStore signs the app with
+your Apple ID – no paid developer account needed – and refreshes it
+automatically while iPhone and AltServer share a Wi-Fi (free Apple IDs: every
+7 days). New releases appear as updates. The source lives on the public GitHub
+Pages site because AltStore cannot download files from this private repository;
+the release job pushes it there with a deploy key (`PAGES_DEPLOY_KEY` secret)
+that can only write to that one repository. (AltStore PAL, the EU marketplace
+edition, only accepts notarized apps and does not work with this source.)
 
 ```bash
 git tag app-v1.2.0 && git push origin app-v1.2.0
