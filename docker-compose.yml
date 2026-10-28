@@ -17,6 +17,8 @@ x-app: &app
       APP_UID: ${APP_UID:-1000}
       APP_GID: ${APP_GID:-1000}
   image: michi-playlist-app:2
+  # Built locally from the Dockerfile; never try to pull it from Docker Hub.
+  pull_policy: build
   restart: unless-stopped
   environment:
     POSTGRES_HOST: db
@@ -48,6 +50,7 @@ services:
       context: .
       target: proxy
     image: michi-playlist-proxy:2
+    pull_policy: build
     restart: unless-stopped
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-4000}:8080"
