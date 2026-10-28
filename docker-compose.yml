@@ -59,6 +59,9 @@ services:
         read_only: true
         volume:
           subpath: media
+          # Without this, Docker copies the image's /media into the still-empty folder
+          # and makes it root-owned, so the app can no longer store artwork.
+          nocopy: true
     depends_on:
       api:
         condition: service_healthy
