@@ -115,6 +115,36 @@ class PlaylistEntry(models.Model):
         indexes = [models.Index(fields=["playlist", "position"])]
 
 
+class ImportSettings(models.Model):
+    """Formats new music is stored in. There is only one row (see ``load``)."""
+
+    class LossyFormat(models.TextChoices):
+        AAC = "aac", "AAC"
+        MP3 = "mp3", "MP3"
+
+    class LosslessFormat(models.TextChoices):
+        FLAC = "flac", "FLAC"
+        ALAC = "alac", "ALAC"
+        AAC = "aac", "AAC"
+        MP3 = "mp3", "MP3"
+
+    # For lossy sources (every YouTube download): AAC streams are stored unchanged.
+    lossy_format = models.CharField(max_length=8, choices=LossyFormat.choices, default=LossyFormat.AAC)
+    # For lossless sources (FLAC/ALAC/WAV/AIFF uploads).
+    lossless_format = models.CharField(max_length=8, choices=LosslessFormat.choices, default=LosslessFormat.FLAC)
+
+    class Meta:
+        verbose_name_plural = "import settings"
+
+    def __str__(self) -> str:
+        return "Import settings"
+
+    @classmethod
+    def load(cls) -> "ImportSettings":
+        settings, _ = cls.objects.get_or_create(pk=1)
+        return settings
+
+
 class PlayEvent(models.Model):
     """One playback of a track, used for the "recently played" sections."""
 

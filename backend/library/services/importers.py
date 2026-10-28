@@ -16,10 +16,11 @@ from django.db import transaction
 from django.db.models import Max
 
 from library.models import Playlist, PlaylistEntry, Track
+from library.services.audio import ConversionError, prepare_upload
 from library.services.indexer import index_file
 from library.services.metadata import MetadataError, fetch_artwork
-from library.services.paths import AUDIO_EXTENSIONS, safe_filename, unique_path
-from library.services.tagging import load_mp3, write_tags
+from library.services.paths import UPLOAD_EXTENSIONS, safe_filename, unique_path
+from library.services.tagging import write_tags
 
 logger = logging.getLogger(__name__)
 
@@ -42,30 +43,33 @@ def append_to_playlist(playlist: Playlist, tracks: Iterable[Track]) -> int:
 
 
 def _install_file(write: Callable[[BinaryIO], None], destination: Path) -> Track:
-    """Write a file via ``write(handle)`` next to ``destination``, validate it, move it in place and index it.
+    """Write a file via ``write(handle)`` next to ``destination``, validate (and maybe convert) it,
+    move it in place and index it. Converted files get the extension of their new format.
 
-    The temporary name starts with a dot so a concurrent library scan ignores it.
+    Temporary names start with a dot so a concurrent library scan ignores them.
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=destination.parent, prefix=".upload-", suffix=".mp3")
-    tmp = Path(tmp_name)
+    fd, tmp_name = tempfile.mkstemp(dir=destination.parent, prefix=".upload-", suffix=destination.suffix.lower())
+    tmp = stored = Path(tmp_name)
     try:
         with os.fdopen(fd, "wb") as handle:
             write(handle)
-        os.chmod(tmp, 0o644)
-        load_mp3(tmp)
-        final = unique_path(destination)
-        os.replace(tmp, final)
+        stored = prepare_upload(tmp)
+        os.chmod(stored, 0o644)
+        final = unique_path(destination.with_suffix(stored.suffix))
+        os.replace(stored, final)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        stored.unlink(missing_ok=True)
         raise
+    finally:
+        tmp.unlink(missing_ok=True)
     return index_file(final)
 
 
 def save_uploaded_file(upload: UploadedFile) -> Track:
     name = safe_filename(upload.name or "upload.mp3")
-    if Path(name).suffix.lower() not in AUDIO_EXTENSIONS:
-        raise ImportFailed(f"{upload.name}: only mp3 files are supported")
+    if Path(name).suffix.lower() not in UPLOAD_EXTENSIONS:
+        raise ImportFailed(f"{upload.name}: only mp3, m4a, flac, wav and aiff files are supported")
     if upload.size and upload.size > settings.MAX_UPLOAD_FILE_SIZE:
         raise ImportFailed(f"{upload.name}: file is too large")
 
@@ -73,7 +77,10 @@ def save_uploaded_file(upload: UploadedFile) -> Track:
         for chunk in upload.chunks():
             handle.write(chunk)
 
-    return _install_file(write, settings.MUSIC_ROOT / name)
+    try:
+        return _install_file(write, settings.MUSIC_ROOT / name)
+    except ConversionError as exc:
+        raise ImportFailed(f"{upload.name}: {exc}") from exc
 
 
 def _natural_key(text: str) -> list:
@@ -102,9 +109,9 @@ def import_zip(
     source_name: str = "",
     progress: Callable[[int, str], None] | None = None,
 ) -> dict:
-    """Extract all mp3 files of a zip archive into a new library folder.
+    """Extract all audio files of a zip archive into a new library folder.
 
-    Only mp3 members are extracted, every member is flattened to its base name
+    Only audio members are extracted, every member is flattened to its base name
     (no path traversal possible) and sizes are enforced while extracting.
     """
     try:
@@ -120,9 +127,9 @@ def import_zip(
             and "__MACOSX" not in m.filename
             and not PurePosixPath(m.filename).name.startswith(".")
         ]
-        audio = [m for m in members if PurePosixPath(m.filename).suffix.lower() in AUDIO_EXTENSIONS]
+        audio = [m for m in members if PurePosixPath(m.filename).suffix.lower() in UPLOAD_EXTENSIONS]
         if not audio:
-            raise ImportFailed("The archive does not contain any mp3 files")
+            raise ImportFailed("The archive does not contain any audio files")
         if len(audio) > MAX_ZIP_MEMBERS:
             raise ImportFailed(f"The archive contains more than {MAX_ZIP_MEMBERS} files")
         if sum(m.file_size for m in audio) > settings.MAX_ZIP_UNCOMPRESSED_SIZE:
@@ -206,7 +213,7 @@ def apply_metadata(path: Path, data: dict) -> None:
 def finalize_download(source: Path, data: dict) -> Track:
     """Tag a downloaded file and move it into the library root (flat, named after the title)."""
     apply_metadata(source, data)
-    destination = unique_path(settings.MUSIC_ROOT / safe_filename(f"{data['title']}.mp3"))
+    destination = unique_path(settings.MUSIC_ROOT / safe_filename(f"{data['title']}{source.suffix.lower()}"))
     tmp = destination.with_name(f".incoming-{destination.name}")
     shutil.move(source, tmp)  # may cross file systems: copy to a hidden name first
     os.chmod(tmp, 0o644)

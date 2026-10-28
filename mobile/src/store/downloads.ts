@@ -324,9 +324,11 @@ function updateJob(trackId: number, patch: Partial<DownloadJob>) {
 
 async function downloadOne(job: DownloadJob) {
   const { track } = job;
-  const relative = `${MUSIC_DIR}/${track.id}.mp3`;
+  // Keep the server file's extension (.mp3, .m4a, .flac): iOS picks the decoder by it.
+  const extension = track.file_path.match(/\.[a-z0-9]+$/i)?.[0].toLowerCase() ?? ".mp3";
+  const relative = `${MUSIC_DIR}/${track.id}${extension}`;
   // A re-download goes to a temporary file first, so the working offline copy survives a failure.
-  const target = job.replace ? `${MUSIC_DIR}/${track.id}.new.mp3` : relative;
+  const target = job.replace ? `${MUSIC_DIR}/${track.id}.new${extension}` : relative;
   updateJob(track.id, { status: "downloading", progress: 0 });
   let lastUpdate = 0;
   try {
@@ -354,6 +356,9 @@ async function downloadOne(job: DownloadJob) {
       if (!job.replace) deleteRelative(relative);
       return;
     }
+    // The song may have been replaced by a file in another format.
+    const previous = state.tracks[track.id]?.file;
+    if (previous && previous !== relative) deleteRelative(previous);
     useDownloads.setState({
       jobs,
       tracks: {

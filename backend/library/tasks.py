@@ -9,7 +9,7 @@ from django.conf import settings
 from jobs.models import Job
 from jobs.worker import handler
 from library.models import Playlist
-from library.services import youtube
+from library.services import audio, youtube
 from library.services.importers import append_to_playlist, finalize_download, import_zip
 from library.services.indexer import scan_library
 from library.services.metadata import MetadataError, search_itunes
@@ -49,11 +49,20 @@ def run_zip_import(job: Job) -> None:
 @handler(Job.Kind.YOUTUBE)
 def run_youtube(job: Job) -> None:
     job.report(2, "Downloading audio…")
-    path, info = youtube.download_audio(
+    source, info = youtube.download_audio(
         job.payload["url"],
         job.staging_dir,
-        progress=lambda fraction: job.report(2 + int(fraction * 78), "Downloading audio…"),
+        format_id=job.payload.get("format_id") or None,
+        progress=lambda fraction: job.report(2 + int(fraction * 76), "Downloading audio…"),
     )
+    codec = audio.normalize_codec(info.get("acodec") or "")
+    requested = job.payload.get("storage_format")
+    storage = audio.STORAGE_FORMATS[requested] if requested else audio.default_storage(audio.is_lossless(codec))
+    copied = codec == storage.codec
+    job.report(80, "Saving audio…" if copied else f"Converting to {storage.label}…")
+    path = audio.convert(source, storage, job.staging_dir / "track", codec)
+    source.unlink(missing_ok=True)
+
     job.report(85, "Looking up metadata…")
     query = job.payload.get("query") or youtube.suggest_query(info)
     try:
@@ -64,6 +73,12 @@ def run_youtube(job: Job) -> None:
     fallback = youtube.fallback_metadata(info)
     job.result = {
         "file": path.name,
+        "format": {
+            "source": audio.CODEC_LABELS.get(codec, codec.upper()),
+            "bitrate": round(info.get("abr") or 0),
+            "storage": storage.key,
+            "converted": not copied,
+        },
         "video": info,
         "query": query,
         "candidates": candidates,

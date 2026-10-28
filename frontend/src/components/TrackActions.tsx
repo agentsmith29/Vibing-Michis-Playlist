@@ -35,7 +35,7 @@ export default function TrackActions({ track, playlistEntry, className = "" }: P
     ui.set({
       confirm: {
         title: "Delete song?",
-        body: `“${track.title}” will be removed from your library and the mp3 file will be deleted from the music folder.`,
+        body: `“${track.title}” will be removed from your library and its file will be deleted from the music folder.`,
         confirmLabel: "Delete",
         onConfirm: async () => {
           await deleteTrack.mutateAsync(track.id);

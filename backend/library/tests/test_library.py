@@ -1,5 +1,6 @@
 import io
 import zipfile
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -8,12 +9,12 @@ from rest_framework.test import APIClient
 
 from jobs.models import Job
 from jobs.worker import claim_next, run
-from library.models import Album, Artist, Artwork, Playlist, Track
+from library.models import Album, Artist, Artwork, ImportSettings, Playlist, Track
 from library.services.indexer import scan_library
 from library.services.paths import safe_filename
-from library.services.tagging import read_tags
-from library.services.youtube import YouTubeError, clean_title, normalize_url
-from library.tests.utils import TempLibraryMixin, cover_bytes, silent_mp3_bytes
+from library.services.tagging import read_tags, write_tags
+from library.services.youtube import YouTubeError, audio_formats, clean_title, default_format, normalize_url
+from library.tests.utils import TempLibraryMixin, cover_bytes, encode_silence, requires_ffmpeg, silent_mp3_bytes
 
 
 class TaggingAndScanTests(TempLibraryMixin, TestCase):
@@ -83,6 +84,21 @@ class HelperTests(TestCase):
     def test_clean_title(self):
         self.assertEqual(clean_title("Phil Collins - In The Air Tonight (Official Music Video) [HD]"),
                          "Phil Collins In The Air Tonight")
+
+    def test_audio_formats_prefer_aac(self):
+        info = {"formats": [
+            {"format_id": "251", "acodec": "opus", "vcodec": "none", "abr": 129.5, "protocol": "https", "ext": "webm"},
+            {"format_id": "140", "acodec": "mp4a.40.2", "vcodec": "none", "abr": 130, "protocol": "https", "ext": "m4a"},
+            {"format_id": "141", "acodec": "mp4a.40.2", "vcodec": "none", "abr": 256, "protocol": "https", "ext": "m4a"},
+            {"format_id": "251-drc", "acodec": "opus", "vcodec": "none", "abr": 129, "protocol": "https"},
+            {"format_id": "234", "acodec": "mp4a.40.2", "vcodec": "none", "protocol": "m3u8_native"},
+            {"format_id": "18", "acodec": "mp4a.40.2", "vcodec": "avc1", "abr": 96, "protocol": "https"},
+        ]}
+        formats = audio_formats(info)
+        self.assertEqual([f["id"] for f in formats], ["141", "140", "251"])
+        self.assertEqual((formats[0]["label"], formats[0]["lossless"]), ("AAC", False))
+        self.assertEqual(default_format(formats)["id"], "141")
+        self.assertEqual(default_format([f for f in formats if f["id"] == "251"])["id"], "251")
 
 
 class ApiTests(TempLibraryMixin, TestCase):
@@ -228,7 +244,7 @@ class ApiTests(TempLibraryMixin, TestCase):
         run(job)
         job.refresh_from_db()
         self.assertEqual(job.status, Job.Status.FAILED)
-        self.assertIn("does not contain any mp3", job.error)
+        self.assertIn("does not contain any audio", job.error)
         self.assertEqual(list(self.music_root.iterdir()), [])
         self.assertEqual(response.status_code, 202)
 
@@ -248,3 +264,100 @@ class ApiTests(TempLibraryMixin, TestCase):
         self.assertEqual(playlist.entries.get().track.title, "Song: Part 1")
         again = self.client.post(f"/api/import/youtube/{job.id}/finalize/", data, format="json")
         self.assertEqual(again.status_code, 404, "a job can only be finalized once")
+
+
+@requires_ffmpeg
+class FormatTests(TempLibraryMixin, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.user = get_user_model().objects.create_user("michi", password="secret-pass-123")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def _upload(self, name: str, data: bytes):
+        upload = SimpleUploadedFile(name, data, content_type="application/octet-stream")
+        return self.client.post("/api/import/upload/", {"files": [upload]}, format="multipart")
+
+    def test_tags_round_trip_m4a_and_flac(self):
+        for name, codec_args, codec in (
+            ("a.m4a", ("-c:a", "aac"), "aac"),
+            ("b.m4a", ("-c:a", "alac"), "alac"),
+            ("c.flac", ("-c:a", "flac"), "flac"),
+        ):
+            path = encode_silence(self.music_root / name, *codec_args)
+            write_tags(path, title="Ünï", artist="Band", album="LP", year=1999, track_number=4,
+                       picture=(cover_bytes(), "image/jpeg"))
+            meta = read_tags(path)
+            self.assertEqual((meta.title, meta.artist, meta.album, meta.year, meta.track_number, meta.codec),
+                             ("Ünï", "Band", "LP", 1999, 4, codec), name)
+            self.assertEqual(meta.picture, cover_bytes(), name)
+            write_tags(path, title="Ünï", artist="Band")
+            self.assertEqual((read_tags(path).album, read_tags(path).track_number), ("", None), name)
+        self.assertEqual(scan_library()["added"], 3)
+
+    def test_lossless_uploads_use_the_lossless_default(self):
+        wav = encode_silence(self._tmp / "Take One.wav", "-c:a", "pcm_s16le").read_bytes()
+        response = self._upload("Take One.wav", wav)
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.data["tracks"][0]["file_path"], "Take One.flac")
+        self.assertEqual(read_tags(self.music_root / "Take One.flac").codec, "flac")
+
+        ImportSettings.objects.update_or_create(pk=1, defaults={"lossless_format": "alac"})
+        flac = encode_silence(self._tmp / "src.flac", "-c:a", "flac")
+        write_tags(flac, title="Tagged", artist="Band", picture=(cover_bytes(), "image/jpeg"))
+        response = self._upload("Take Two.flac", flac.read_bytes())
+        self.assertEqual(response.data["tracks"][0]["file_path"], "Take Two.m4a")
+        meta = read_tags(self.music_root / "Take Two.m4a")
+        self.assertEqual((meta.codec, meta.title, meta.picture), ("alac", "Tagged", cover_bytes()))
+        self.assertEqual(sorted(p.name for p in self.music_root.iterdir()), ["Take One.flac", "Take Two.m4a"])
+
+    def test_lossy_uploads_are_kept_unchanged(self):
+        data = encode_silence(self._tmp / "x.m4a", "-c:a", "aac").read_bytes()
+        ImportSettings.objects.update_or_create(pk=1, defaults={"lossy_format": "mp3"})
+        response = self._upload("Song.m4a", data)
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual((self.music_root / "Song.m4a").read_bytes(), data)
+
+    def test_stream_content_type_matches_format(self):
+        encode_silence(self.music_root / "a.flac", "-c:a", "flac")
+        scan_library()
+        response = self.client.get(f"/api/tracks/{Track.objects.get().id}/stream/")
+        self.assertEqual(response["Content-Type"], "audio/flac")
+
+    def test_import_settings_api(self):
+        data = self.client.get("/api/import/settings/").data
+        self.assertEqual((data["lossy_format"], data["lossless_format"]), ("aac", "flac"))
+        self.assertEqual([f["key"] for f in data["formats"] if f["lossless"]], ["flac", "alac"])
+        response = self.client.put("/api/import/settings/", {"lossless_format": "alac"}, format="json")
+        self.assertEqual(response.data["lossless_format"], "alac")
+        bad = self.client.put("/api/import/settings/", {"lossy_format": "flac"}, format="json")
+        self.assertEqual(bad.status_code, 400, "lossy sources cannot default to a lossless format")
+
+    def _run_youtube(self, **payload):
+        def fake_download(url, target_dir, format_id=None, progress=None):
+            source = encode_silence(target_dir / "source.m4a", "-c:a", "aac")
+            return source, {"id": "abc", "title": "Band - Song", "acodec": "mp4a.40.2", "abr": 130, "format_id": format_id}
+
+        job = Job.objects.create(kind=Job.Kind.YOUTUBE, payload={"url": "https://www.youtube.com/watch?v=abc"} | payload)
+        with mock.patch("library.tasks.youtube.download_audio", fake_download), \
+                mock.patch("library.tasks.search_itunes", return_value=[]):
+            run(claim_next())
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.REVIEW, job.error)
+        return job
+
+    def test_youtube_keeps_aac_and_converts_on_request(self):
+        job = self._run_youtube(format_id="140")
+        self.assertEqual(job.result["file"], "track.m4a")
+        self.assertEqual(job.result["format"], {"source": "AAC", "bitrate": 130, "storage": "aac", "converted": False})
+        self.assertEqual(sorted(p.name for p in job.staging_dir.iterdir()), ["track.m4a"])
+
+        response = self.client.post(
+            f"/api/import/youtube/{job.id}/finalize/", {"title": "Song", "artist": "Band"}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(read_tags(self.music_root / "Song.m4a").title, "Song")
+
+        job = self._run_youtube(storage_format="flac")
+        self.assertEqual((job.result["file"], job.result["format"]["converted"]), ("track.flac", True))
+        self.assertEqual(read_tags(job.staging_dir / "track.flac").codec, "flac")

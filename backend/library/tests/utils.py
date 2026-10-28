@@ -1,6 +1,8 @@
 import io
 import shutil
+import subprocess
 import tempfile
+import unittest
 from pathlib import Path
 
 from django.test import override_settings
@@ -12,6 +14,20 @@ _FRAME = b"\xff\xfb\x90\x00" + b"\x00" * 413
 
 def silent_mp3_bytes(frames: int = 60) -> bytes:
     return _FRAME * frames
+
+
+requires_ffmpeg = unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
+
+
+def encode_silence(path: Path, *codec_args: str, seconds: float = 1.0) -> Path:
+    """Write a short silent stereo file, e.g. ``encode_silence(p, "-c:a", "aac")`` (needs ffmpeg)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+         "-t", str(seconds), *codec_args, str(path)],
+        check=True,
+    )
+    return path
 
 
 def cover_bytes(color=(200, 40, 40)) -> bytes:

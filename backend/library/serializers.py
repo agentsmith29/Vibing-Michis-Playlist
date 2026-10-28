@@ -1,8 +1,10 @@
 from django.db.models import Count
 from rest_framework import serializers
 
-from library.models import Album, Artist, Playlist, PlaylistEntry, Track
+from library.models import Album, Artist, ImportSettings, Playlist, PlaylistEntry, Track
+from library.services.audio import STORAGE_FORMATS
 from library.services.metadata import is_allowed_artwork_url
+from library.services.youtube import FORMAT_ID
 
 
 class TrackSerializer(serializers.ModelSerializer):
@@ -152,11 +154,24 @@ class TrackUpdateSerializer(MetadataSerializer):
             field.required = False
 
 
+class YouTubeFormatsSerializer(serializers.Serializer):
+    url = serializers.CharField(max_length=500)
+
+
 class YouTubeImportSerializer(serializers.Serializer):
     url = serializers.CharField(max_length=500)
     query = serializers.CharField(max_length=200, allow_blank=True, required=False, default="")
     auto_accept = serializers.BooleanField(required=False, default=False)
     playlist_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+    # Both optional: without them the best AAC stream is stored in the default format from the settings.
+    format_id = serializers.RegexField(FORMAT_ID, required=False, allow_blank=True, default="")
+    storage_format = serializers.ChoiceField(choices=list(STORAGE_FORMATS), required=False, allow_blank=True, default="")
+
+
+class ImportSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ImportSettings
+        fields = ["lossy_format", "lossless_format"]
 
 
 class YouTubeFinalizeSerializer(MetadataSerializer):

@@ -1,6 +1,7 @@
 import logging
 import uuid
 from datetime import timedelta
+from pathlib import PurePosixPath
 from urllib.parse import urlencode
 
 from django.conf import settings
@@ -21,25 +22,28 @@ from rest_framework.views import APIView
 from jobs.models import Job
 from jobs.serializers import JobSerializer
 from jobs.worker import enqueue
-from library.models import Album, Artist, Artwork, Playlist, PlayEvent, Track
+from library.models import Album, Artist, Artwork, ImportSettings, Playlist, PlayEvent, Track
 from library.serializers import (
     AlbumDetailSerializer,
     AlbumSerializer,
     ArtistDetailSerializer,
     ArtistSerializer,
+    ImportSettingsSerializer,
     PlaylistDetailSerializer,
     PlaylistSerializer,
     TrackSerializer,
     TrackUpdateSerializer,
     YouTubeFinalizeSerializer,
+    YouTubeFormatsSerializer,
     YouTubeImportSerializer,
 )
 from library.services import youtube
+from library.services.audio import STORAGE_FORMATS
 from library.services.editing import delete_track, update_track_metadata
 from library.services.files import protected_file
 from library.services.importers import ImportFailed, append_to_playlist, save_uploaded_file
 from library.services.metadata import MetadataError, search_itunes
-from library.services.paths import safe_filename
+from library.services.paths import CONTENT_TYPES, safe_filename
 from library.services.signing import MAX_AGE as STREAM_URL_MAX_AGE
 from library.services.signing import sign_stream, verify_stream
 from library.services.tagging import InvalidAudioFile
@@ -140,7 +144,8 @@ class TrackViewSet(
             authorized = verify_stream(request.query_params["sig"], track.pk) is not None
         if not authorized:
             raise PermissionDenied("Authentication credentials were not provided.")
-        return protected_file(request, "music", track.file_path, content_type="audio/mpeg")
+        content_type = CONTENT_TYPES.get(PurePosixPath(track.file_path).suffix.lower(), "application/octet-stream")
+        return protected_file(request, "music", track.file_path, content_type=content_type)
 
     @action(detail=False, methods=["post"], url_path="stream-urls")
     def stream_urls(self, request):
@@ -450,6 +455,46 @@ class ZipImportView(APIView):
         return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
 
 
+class ImportSettingsView(APIView):
+    """Default storage formats, plus the list of formats to choose from."""
+
+    def _response(self, import_settings):
+        data = ImportSettingsSerializer(import_settings).data
+        return Response(data | {"formats": [f.as_dict() for f in STORAGE_FORMATS.values()]})
+
+    def get(self, request):
+        return self._response(ImportSettings.load())
+
+    def put(self, request):
+        serializer = ImportSettingsSerializer(ImportSettings.load(), data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        return self._response(serializer.save())
+
+
+class YouTubeFormatsView(APIView):
+    """The audio streams a video offers, so the user can pick one before downloading."""
+
+    def post(self, request):
+        serializer = YouTubeFormatsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            url = youtube.normalize_url(serializer.validated_data["url"])
+            info = youtube.fetch_info(url)
+        except youtube.YouTubeError as exc:
+            raise ValidationError({"url": str(exc)})
+        formats = youtube.audio_formats(info)
+        if not formats:
+            raise ValidationError({"url": "This video has no audio streams"})
+        default = youtube.default_format(formats)
+        return Response(
+            {
+                "video": {key: info.get(key) for key in ("id", "title", "uploader", "duration", "thumbnail")},
+                "formats": formats,
+                "default_format": default["id"] if default else None,
+            }
+        )
+
+
 class YouTubeImportView(APIView):
     def post(self, request):
         serializer = YouTubeImportSerializer(data=request.data)
@@ -467,6 +512,8 @@ class YouTubeImportView(APIView):
                 "query": data["query"].strip(),
                 "auto_accept": data["auto_accept"],
                 "playlist_id": data["playlist_id"],
+                "format_id": data["format_id"],
+                "storage_format": data["storage_format"],
             },
         )
         return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)

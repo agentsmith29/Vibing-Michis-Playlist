@@ -40,7 +40,7 @@ export default function HomePage() {
       <>
         <h1 className="page-title mt-2">{greeting()}</h1>
         <EmptyState icon="music-note-beamed" title="Your library is empty">
-          <p>Add mp3 files to the music folder, upload them, or download a song from YouTube.</p>
+          <p>Add audio files to the music folder, upload them, or download a song from YouTube.</p>
           <Link to="/import" className="btn btn-primary">
             Add music
           </Link>

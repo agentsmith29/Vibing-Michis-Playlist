@@ -4,8 +4,9 @@ import { Alert, Badge, Button, Col, Form, Modal, ProgressBar, Row, Spinner } fro
 import { Link } from "react-router-dom";
 
 import { api, errorMessage, uploadWithProgress } from "../api/client";
-import { useInvalidateLibrary, useJobs, usePlaylists } from "../api/queries";
-import type { Job, Track, TrackMetadata, YouTubeResult } from "../api/types";
+import { useImportSettings, useInvalidateLibrary, useJobs, usePlaylists } from "../api/queries";
+import type { Job, StorageFormatKey, Track, TrackMetadata, YouTubeFormats, YouTubeResult } from "../api/types";
+import { LosslessBadge, SourceFormatList, StorageFormatPicker } from "../components/Formats";
 import { CandidateList, MetadataFields, MetadataSearch, fromCandidate } from "../components/MetadataForm";
 import { formatTime } from "../lib/format";
 import { toast } from "../store/ui";
@@ -29,12 +30,50 @@ function PlaylistSelect({ value, onChange, label = "Add to playlist" }: { value:
 
 function YouTubeForm() {
   const client = useQueryClient();
+  const settings = useImportSettings();
   const [url, setUrl] = useState("");
   const [query, setQuery] = useState("");
   const [autoAccept, setAutoAccept] = useState(false);
   const [playlist, setPlaylist] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [formats, setFormats] = useState<YouTubeFormats | null>(null);
+  const [lookingUp, setLookingUp] = useState(false);
+  const [sourceId, setSourceId] = useState("");
+  const [storage, setStorage] = useState<StorageFormatKey | "">("");
+
+  // Look up the available streams shortly after a link was entered.
+  useEffect(() => {
+    setFormats(null);
+    setSourceId("");
+    setStorage("");
+    setError("");
+    const link = url.trim();
+    if (!/youtu\.?be/i.test(link)) return;
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setLookingUp(true);
+      try {
+        const data = await api<YouTubeFormats>("/import/youtube/formats/", { body: { url: link }, signal: controller.signal });
+        setFormats(data);
+        setSourceId(data.default_format ?? "");
+      } catch (err) {
+        if (!controller.signal.aborted) setError(errorMessage(err));
+      } finally {
+        if (!controller.signal.aborted) setLookingUp(false);
+      }
+    }, 500);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+      setLookingUp(false);
+    };
+  }, [url]);
+
+  const source = formats?.formats.find((format) => format.id === sourceId);
+  const defaultStorage = source && settings.data ? (source.lossless ? settings.data.lossless_format : settings.data.lossy_format) : "";
+  const storageKey = storage || defaultStorage;
+  const target = settings.data?.formats.find((format) => format.key === storageKey);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -42,7 +81,14 @@ function YouTubeForm() {
     setError("");
     try {
       await api<Job>("/import/youtube/", {
-        body: { url, query, auto_accept: autoAccept, playlist_id: playlist ? Number(playlist) : null },
+        body: {
+          url,
+          query,
+          auto_accept: autoAccept,
+          playlist_id: playlist ? Number(playlist) : null,
+          format_id: source ? source.id : "",
+          storage_format: source ? storageKey : "",
+        },
       });
       setUrl("");
       setQuery("");
@@ -61,7 +107,7 @@ function YouTubeForm() {
         <i className="bi bi-youtube text-danger me-2" />
         From YouTube
       </h2>
-      <p className="small text-body-secondary">Paste a link; the audio is saved as mp3 and tagged with title, artist, album and cover.</p>
+      <p className="small text-body-secondary">Paste a link, pick the audio stream and how to store it; the song is tagged with title, artist, album and cover.</p>
       <Form.Group className="mb-2" controlId="yt-url">
         <Form.Control
           required
@@ -71,6 +117,39 @@ function YouTubeForm() {
           onPaste={(e) => setUrl(e.clipboardData.getData("text").trim())}
         />
       </Form.Group>
+      {lookingUp && (
+        <div className="small text-body-secondary mb-2">
+          <Spinner size="sm" /> Reading the available formats…
+        </div>
+      )}
+      {formats && settings.data && (
+        <div className="mb-3">
+          <div className="small text-truncate mb-2" title={formats.video.title}>
+            <i className="bi bi-music-note-beamed text-body-secondary me-1" />
+            {formats.video.title}
+          </div>
+          <div className="small fw-semibold mb-1">Download</div>
+          <SourceFormatList
+            formats={formats.formats}
+            value={sourceId}
+            onChange={(id) => {
+              setSourceId(id);
+              setStorage("");
+            }}
+          />
+          <div className="small fw-semibold mt-2 mb-1">Store as</div>
+          <StorageFormatPicker name="yt-storage" formats={settings.data.formats} value={storageKey} onChange={setStorage} />
+          {source && target && (
+            <div className="small text-body-secondary mt-1">
+              {source.codec === target.key
+                ? `The ${source.label} stream is saved unchanged (${target.extension}).`
+                : target.lossless && !source.lossless
+                  ? `A lossy stream does not get better in a lossless format, only bigger.`
+                  : `Converted from ${source.label} to ${target.label} (${target.extension}).`}
+            </div>
+          )}
+        </div>
+      )}
       <Form.Group className="mb-2" controlId="yt-query">
         <Form.Control size="sm" placeholder="Search metadata for… (optional, e.g. “Phil Collins In The Air Tonight”)" value={query} onChange={(e) => setQuery(e.target.value)} />
       </Form.Group>
@@ -127,20 +206,25 @@ function Dropzone({ accept, multiple, onFiles, children }: { accept: string; mul
   );
 }
 
+const AUDIO_EXTENSIONS = [".mp3", ".m4a", ".flac", ".wav", ".aif", ".aiff"];
+
 function UploadForm() {
   const invalidate = useInvalidateLibrary();
   const [playlist, setPlaylist] = useState("");
   const [progress, setProgress] = useState<number | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
 
+  const settings = useImportSettings();
+  const losslessLabel = settings.data?.formats.find((format) => format.key === settings.data?.lossless_format)?.label;
+
   const upload = async (files: File[]) => {
-    const mp3s = files.filter((file) => file.name.toLowerCase().endsWith(".mp3"));
-    if (!mp3s.length) {
-      setErrors(["Please choose mp3 files"]);
+    const audio = files.filter((file) => AUDIO_EXTENSIONS.some((extension) => file.name.toLowerCase().endsWith(extension)));
+    if (!audio.length) {
+      setErrors(["Please choose audio files (mp3, m4a, flac, wav or aiff)"]);
       return;
     }
     const form = new FormData();
-    mp3s.forEach((file) => form.append("files", file));
+    audio.forEach((file) => form.append("files", file));
     if (playlist) form.append("playlist_id", playlist);
     setErrors([]);
     setProgress(0);
@@ -163,16 +247,19 @@ function UploadForm() {
         <i className="bi bi-file-earmark-music text-accent me-2" />
         Upload songs
       </h2>
-      <p className="small text-body-secondary">mp3 files are added to your music folder with their existing tags.</p>
+      <p className="small text-body-secondary">
+        MP3, AAC, ALAC, FLAC, WAV and AIFF files are added with their existing tags. Lossless files are stored as {losslessLabel ?? "set in the settings"}
+        , lossy files are kept as they are.
+      </p>
       {progress !== null ? (
         <div className="py-4">
           <ProgressBar now={progress * 100} label={`${Math.round(progress * 100)}%`} />
           <div className="small text-body-secondary mt-2">{progress >= 1 ? "Processing…" : "Uploading…"}</div>
         </div>
       ) : (
-        <Dropzone accept=".mp3,audio/mpeg" multiple onFiles={upload}>
+        <Dropzone accept={AUDIO_EXTENSIONS.join(",")} multiple onFiles={upload}>
           <i className="bi bi-cloud-arrow-up fs-2 text-body-secondary" />
-          <div className="fw-semibold">Drop mp3 files here</div>
+          <div className="fw-semibold">Drop audio files here</div>
           <div className="small text-body-secondary">or click to choose</div>
         </Dropzone>
       )}
@@ -226,7 +313,7 @@ function ZipForm() {
         <i className="bi bi-file-earmark-zip text-teal me-2" style={{ color: "var(--teal)" }} />
         Import a playlist (zip)
       </h2>
-      <p className="small text-body-secondary">All mp3s are extracted into their own folder. An included .m3u file defines the order.</p>
+      <p className="small text-body-secondary">All audio files are extracted into their own folder. An included .m3u file defines the order.</p>
       {progress !== null ? (
         <div className="py-4">
           <ProgressBar now={progress * 100} label={`${Math.round(progress * 100)}%`} />
@@ -261,7 +348,9 @@ function ZipForm() {
 function ReviewModal({ job, onHide }: { job: Job | null; onHide: () => void }) {
   const client = useQueryClient();
   const invalidate = useInvalidateLibrary();
+  const settings = useImportSettings();
   const result = job?.result as YouTubeResult | undefined;
+  const stored = settings.data?.formats.find((format) => format.key === result?.format?.storage);
   const [value, setValue] = useState<TrackMetadata | null>(null);
   const [preview, setPreview] = useState("");
   const [selected, setSelected] = useState<string>();
@@ -322,6 +411,13 @@ function ReviewModal({ job, onHide }: { job: Job | null; onHide: () => void }) {
                   <div className="text-body-secondary">
                     {result.video.uploader} · {formatTime(result.video.duration)}
                   </div>
+                  {result.format && stored && (
+                    <div className="text-body-secondary d-flex flex-wrap align-items-center gap-1">
+                      {result.format.source} {result.format.bitrate ? `${result.format.bitrate} kbit/s` : ""} → {stored.label}
+                      {result.format.converted ? " (converted)" : " (unchanged)"}
+                      {stored.lossless && <LosslessBadge />}
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="small text-body-secondary mb-1">Matches for “{result.query}”</div>

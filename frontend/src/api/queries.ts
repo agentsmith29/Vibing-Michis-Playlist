@@ -7,6 +7,7 @@ import type {
   Artist,
   ArtistDetail,
   Home,
+  ImportSettings,
   Job,
   LibraryStats,
   Page,
@@ -33,6 +34,7 @@ export const keys = {
   jobs: (params: Record<string, string>) => ["jobs", params] as const,
   stats: ["stats"] as const,
   system: ["system"] as const,
+  importSettings: ["import-settings"] as const,
 };
 
 const qs = (params: Record<string, string>) => {
@@ -238,4 +240,17 @@ export function useStats() {
 
 export function useSystem() {
   return useQuery({ queryKey: keys.system, queryFn: () => api<SystemInfo>("/system/") });
+}
+
+export function useImportSettings() {
+  return useQuery({ queryKey: keys.importSettings, queryFn: () => api<ImportSettings>("/import/settings/"), staleTime: Infinity });
+}
+
+export function useUpdateImportSettings() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Partial<Pick<ImportSettings, "lossy_format" | "lossless_format">>) =>
+      api<ImportSettings>("/import/settings/", { method: "PUT", body: patch }),
+    onSuccess: (data) => client.setQueryData(keys.importSettings, data),
+  });
 }

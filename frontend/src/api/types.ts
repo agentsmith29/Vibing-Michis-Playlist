@@ -129,8 +129,45 @@ export interface TrackMetadata {
 export type JobKind = "scan" | "youtube" | "zip_import" | "update_ytdlp";
 export type JobStatus = "queued" | "running" | "review" | "done" | "failed" | "cancelled";
 
+export type StorageFormatKey = "aac" | "mp3" | "flac" | "alac";
+
+export interface StorageFormat {
+  key: StorageFormatKey;
+  label: string;
+  description: string;
+  extension: string;
+  lossless: boolean;
+}
+
+export interface ImportSettings {
+  lossy_format: StorageFormatKey;
+  lossless_format: StorageFormatKey;
+  formats: StorageFormat[];
+}
+
+/** An audio stream offered by a YouTube video. */
+export interface SourceFormat {
+  id: string;
+  codec: string;
+  label: string;
+  /** kbit/s */
+  bitrate: number;
+  sample_rate: number | null;
+  size: number | null;
+  ext: string;
+  language: string | null;
+  lossless: boolean;
+}
+
+export interface YouTubeFormats {
+  video: { id: string; title: string; uploader: string; duration: number; thumbnail: string };
+  formats: SourceFormat[];
+  default_format: string | null;
+}
+
 export interface YouTubeResult {
   file: string;
+  format?: { source: string; bitrate: number; storage: StorageFormatKey; converted: boolean };
   query: string;
   video: { id: string; title: string; uploader: string; duration: number; thumbnail: string };
   candidates: MetadataCandidate[];

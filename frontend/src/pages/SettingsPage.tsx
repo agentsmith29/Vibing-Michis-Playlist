@@ -3,8 +3,9 @@ import { useEffect, useState } from "react";
 import { Alert, Badge, Button, Col, Form, Row, Spinner, ToggleButton, ToggleButtonGroup } from "react-bootstrap";
 
 import { api, errorMessage } from "../api/client";
-import { useInvalidateLibrary, useJobs, useLogout, useSession, useStats, useSystem } from "../api/queries";
-import type { Job } from "../api/types";
+import { useImportSettings, useInvalidateLibrary, useJobs, useLogout, useSession, useStats, useSystem, useUpdateImportSettings } from "../api/queries";
+import type { ImportSettings, Job, StorageFormat } from "../api/types";
+import { LosslessBadge, StorageFormatPicker } from "../components/Formats";
 import { formatBytes, formatLongDuration } from "../lib/format";
 import { getThemePreference, setThemePreference, type ThemePreference } from "../lib/theme";
 import { toast } from "../store/ui";
@@ -122,6 +123,50 @@ function DownloaderCard() {
         </Button>
         {update && <span className="small text-body-secondary text-truncate">{update.status === "failed" ? update.error : update.message}</span>}
       </div>
+    </section>
+  );
+}
+
+function FormatsCard() {
+  const settings = useImportSettings();
+  const update = useUpdateImportSettings();
+  const data = settings.data;
+
+  const save = (patch: Partial<Pick<ImportSettings, "lossy_format" | "lossless_format">>) =>
+    update.mutate(patch, {
+      onSuccess: () => toast("Default format saved"),
+      onError: (error) => toast(errorMessage(error), "danger"),
+    });
+
+  const describe = (key: string) => data?.formats.find((format: StorageFormat) => format.key === key)?.description;
+
+  return (
+    <section className="panel mb-3">
+      <h2 className="h5 fw-bold">Storage formats</h2>
+      <p className="small text-body-secondary">
+        How new music is saved. Each YouTube download can still use a different format; lossy files you upload are always kept as they are.
+      </p>
+      {data && (
+        <>
+          <div className="mb-3">
+            <div className="small fw-semibold mb-1">Lossy sources (YouTube)</div>
+            <StorageFormatPicker
+              name="lossy-format"
+              formats={data.formats.filter((format) => !format.lossless)}
+              value={data.lossy_format}
+              onChange={(value) => save({ lossy_format: value })}
+            />
+            <div className="small text-body-secondary mt-1">{describe(data.lossy_format)}</div>
+          </div>
+          <div>
+            <div className="small fw-semibold mb-1 d-flex align-items-center gap-2">
+              Lossless sources (FLAC, ALAC, WAV, AIFF) <LosslessBadge />
+            </div>
+            <StorageFormatPicker name="lossless-format" formats={data.formats} value={data.lossless_format} onChange={(value) => save({ lossless_format: value })} />
+            <div className="small text-body-secondary mt-1">{describe(data.lossless_format)}</div>
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -255,6 +300,7 @@ export default function SettingsPage() {
       <Row className="g-3">
         <Col xl={7}>
           <LibraryCard />
+          <FormatsCard />
           <DownloaderCard />
         </Col>
         <Col xl={5}>

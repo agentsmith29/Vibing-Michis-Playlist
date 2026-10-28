@@ -4,7 +4,11 @@ import re
 import unicodedata
 from pathlib import Path
 
-AUDIO_EXTENSIONS = {".mp3"}
+# Formats the library stores (and the scanner indexes).
+AUDIO_EXTENSIONS = {".mp3", ".m4a", ".flac"}
+# Uploads may also be uncompressed audio; it is converted to a library format on import.
+UPLOAD_EXTENSIONS = AUDIO_EXTENSIONS | {".wav", ".aif", ".aiff"}
+CONTENT_TYPES = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".flac": "audio/flac"}
 
 _FORBIDDEN = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
 _MAX_NAME_LENGTH = 180

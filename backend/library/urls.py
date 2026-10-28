@@ -20,7 +20,9 @@ urlpatterns = router.urls + [
     path("library/scan/", views.ScanView.as_view()),
     path("import/upload/", views.UploadView.as_view()),
     path("import/zip/", views.ZipImportView.as_view()),
+    path("import/settings/", views.ImportSettingsView.as_view()),
     path("import/youtube/", views.YouTubeImportView.as_view()),
+    path("import/youtube/formats/", views.YouTubeFormatsView.as_view()),
     path("import/youtube/<uuid:job_id>/finalize/", views.YouTubeFinalizeView.as_view()),
     path("import/youtube/<uuid:job_id>/discard/", views.YouTubeDiscardView.as_view()),
 ]
